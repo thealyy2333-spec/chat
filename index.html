@@ -1945,7 +1945,7 @@
       <label for="rememberKeys">记住 Key（下次打开不用重填）</label>
     </div>
 
-    <button id="startBtn" onclick="startChat()" disabled>开始聊天</button>
+    <button id="startBtn" onclick="startChat()">开始聊天</button>
 
     <div class="setup-hint">
       Anthropic → <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a><br>
@@ -3181,12 +3181,19 @@ const googleInput = document.getElementById("googleKey");
 const startButton = document.getElementById("startBtn");
 
 function checkKeys() {
-  startButton.disabled = !(claudeInput.value.trim() && elevenInput.value.trim());
+  const ready = !!(claudeInput.value.trim() && elevenInput.value.trim());
+  // Never set disabled=true — mobile browsers block onclick on disabled buttons.
+  // Use only visual feedback so tapping always works regardless of event timing.
+  startButton.style.opacity = ready ? "1" : "0.4";
+  startButton.style.cursor  = ready ? "pointer" : "default";
 }
-claudeInput.addEventListener("input", checkKeys);
-elevenInput.addEventListener("input", checkKeys);
-openaiInput.addEventListener("input", checkKeys);
-googleInput.addEventListener("input", checkKeys);
+// Mobile fix: paste/autofill/change don't always fire "input"
+[claudeInput, elevenInput, openaiInput, googleInput].forEach(el => {
+  ["input", "change", "keyup"].forEach(evt => el.addEventListener(evt, checkKeys));
+  el.addEventListener("paste", () => setTimeout(checkKeys, 80));
+});
+// Initial visual state
+checkKeys();
 openaiInput.addEventListener("keydown", e => {
   if (e.key === "Enter") startChat();
 });
