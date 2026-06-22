@@ -1516,9 +1516,10 @@
     .setup-card {
       padding: 24px 18px;
       max-height: 90dvh;
-      overflow-y: auto;
-      -webkit-overflow-scrolling: touch;
     }
+
+    /* Prevent 300ms tap delay and scroll-swallow on iOS */
+    #startBtn { touch-action: manipulation; }
 
     /* ── Sticker picker ──────────────────────────────── */
     /* Already spans full width via left:0/right:0; just tighten bottom gap */
