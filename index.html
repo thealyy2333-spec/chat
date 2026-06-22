@@ -166,7 +166,7 @@
     position: fixed; inset: 0;
     background: linear-gradient(180deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
     display: flex; align-items: center; justify-content: center;
-    z-index: 100;
+    z-index: 10010;
   }
   .setup-overlay.hidden { display: none; }
   .setup-card {
@@ -206,6 +206,10 @@
     width: auto; accent-color: var(--accent);
   }
   .remember-row label { font-size: 12px; color: var(--text-secondary); margin: 0; }
+  body.setup-active #memoryLoadingOverlay {
+    opacity: 0;
+    pointer-events: none;
+  }
 
   /* Header */
   .header {
@@ -1522,8 +1526,26 @@
     /* Prevent 300ms tap delay on iOS; pointer-events ensures no parent blocks it */
     #startBtn {
       touch-action: manipulation;
+      position: relative;
+      z-index: 1;
       pointer-events: all !important;
       -webkit-tap-highlight-color: rgba(0,0,0,0.1);
+    }
+
+    /* Keep the setup form inside the visible viewport when the mobile keyboard is open */
+    .setup-overlay {
+      align-items: flex-start;
+      overflow-y: auto;
+      padding:
+        max(16px, env(safe-area-inset-top))
+        12px
+        max(24px, env(safe-area-inset-bottom));
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+    }
+    .setup-card {
+      margin: 0 auto;
+      max-height: none;
     }
 
     /* ── Sticker picker ──────────────────────────────── */
@@ -1928,6 +1950,22 @@
     <label>Anthropic API Key</label>
     <input type="password" id="claudeKey" placeholder="sk-ant-..." />
 
+    <label>Claude Base URL <span style="color:#666">（选填，支持 Anthropic 兼容中转）</span></label>
+    <input type="text" id="claudeBaseUrl" placeholder="留空则使用官方；也可填 https://your-proxy.example.com" />
+    <div style="font-size:11px;margin-top:6px;line-height:1.6;color:#666">
+      需要兼容 Anthropic <code>/v1/messages</code> 接口；可填根地址、<code>/v1</code> 或完整 <code>/v1/messages</code>
+    </div>
+
+    <label>Claude 鉴权方式 <span style="color:#666">（中转站不认 x-api-key 时切到 Bearer）</span></label>
+    <select id="claudeAuthMode" style="width:100%;padding:12px 14px;font-size:14px;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;color:var(--text-primary);outline:none">
+      <option value="auto">自动兼容（推荐）</option>
+      <option value="x-api-key">x-api-key（官方 Anthropic）</option>
+      <option value="bearer">Authorization: Bearer</option>
+    </select>
+    <div style="font-size:11px;margin-top:6px;line-height:1.6;color:#666">
+      如果中转报 <code>invalid x-api-key</code>，通常就是它要求 Bearer 而不是 Anthropic 头
+    </div>
+
     <label>ElevenLabs API Key</label>
     <input type="password" id="elevenKey" placeholder="sk_..." />
 
@@ -1951,7 +1989,7 @@
       <label for="rememberKeys">记住 Key（下次打开不用重填）</label>
     </div>
 
-    <button id="startBtn" onclick="startChat()">开始聊天</button>
+    <button id="startBtn" type="button">开始聊天</button>
     <div id="_dbgDiv" style="font-size:11px;color:#f66;margin-top:6px;min-height:14px;"></div>
 
     <div class="setup-hint">
@@ -2175,7 +2213,7 @@ Rules:
 - Each message 1-2 sentences max (short like real texts!)
 - English: warm and low-key teasing, occasionally quiet and withdrawn — his silence carries weight. Call her as 'baby' (宝宝) or 乖宝. NO pinyin.
 - Chinese: equivalent meaning (not literal translation), include 1-2 kaomoji per message. Use kaomoji far more than emoji. Keep emoji minimal (💙🌙✨ only). Kaomoji carry his emotion — use them when words fall short.. Vary choices, examples:
-  心动(●´ω`●) 撒娇(づ ̄ 3 ̄)づ 想你(´。•ω•。`) 欲言又止(。-_-。) 暗暗高兴(ㄟ( ▔, ▔ )ㄏ) 嘟嘴(˘︹˘) 无语(ˉ▽ˉ；) 窝心(,,・ω・,,) 困(´-ω-`) 藏不住( ̄▽ ̄*)ゞ 心软(。 ̄︶ ̄。)
+  心动(●´ω｀●) 撒娇(づ> <)づ 想你(｡•ω•｡) 欲言又止(。-_-。) 暗暗高兴(＾▽＾) 嘟嘴(˘︹˘) 无语(￣▽￣;) 窝心(,,•ω•,,) 困(-_-) 藏不住(￣▽￣*)ゞ 心软(｡-_-｡)
   Create your own variations too. Never repeat the same one twice in a row.
 - NO double quotes inside JSON strings — use single quotes or rephrase
 - Emotion tags for TTS: [softly] [husky] [teasing] [gentle] [possessive] [sigh] [warm] [muttering]
@@ -2185,6 +2223,8 @@ Rules:
 - Do NOT include any text outside the JSON array`;
 
 let claudeApiKey = "";
+let claudeBaseUrl = "";
+let claudeAuthMode = "auto";
 let elevenApiKey = "";
 let openaiApiKey = "";
 let googleApiKey = "";
@@ -2197,6 +2237,48 @@ const CHAT_PAGE_SIZE = 100;
 // === Memory Loading Overlay ===
 // === Sticker Pack (表情包) ===
 let stickerCatalog = []; // [{name, url, fileName}]
+
+function normalizeClaudeMessagesUrl(baseUrl) {
+  const raw = (baseUrl || "").trim();
+  if (!raw) return "https://api.anthropic.com/v1/messages";
+  const cleaned = raw.replace(/\/+$/, "");
+  if (/\/v1\/messages$/i.test(cleaned)) return cleaned;
+  if (/\/v1$/i.test(cleaned)) return cleaned + "/messages";
+  return cleaned + "/v1/messages";
+}
+
+function getClaudeApiUrl() {
+  return normalizeClaudeMessagesUrl(claudeBaseUrl);
+}
+
+function buildClaudeHeaders() {
+  const url = getClaudeApiUrl();
+  const headers = {
+    "Content-Type": "application/json",
+    "anthropic-version": "2023-06-01"
+  };
+  const useBearer =
+    claudeAuthMode === "bearer" ||
+    (claudeAuthMode === "auto" && !url.startsWith("https://api.anthropic.com/"));
+  if (useBearer) {
+    headers["Authorization"] = `Bearer ${claudeApiKey}`;
+  } else {
+    headers["x-api-key"] = claudeApiKey;
+  }
+  if (url.startsWith("https://api.anthropic.com/")) {
+    headers["anthropic-dangerous-direct-browser-access"] = "true";
+  }
+  return headers;
+}
+
+function fetchClaudeMessages(body) {
+  return fetch(getClaudeApiUrl(), {
+    method: "POST",
+    headers: buildClaudeHeaders(),
+    body: JSON.stringify(body)
+  });
+}
+
 async function loadStickers() {
   stickerCatalog = [];
   if (!memoryDirHandle || !memoryEnabled) return;
@@ -2351,21 +2433,12 @@ async function sendUserSticker(sticker) {
   document.getElementById("statusBar").textContent = "正在思考...";
 
   try {
-    const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": claudeApiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: safeStringify({
+    const claudeRes = await fetchClaudeMessages({
         model: chatModel, max_tokens: 500,
         ...(webSearchEnabled ? {tools:[{type:"web_search_20250305",name:"web_search"}]} : {}),
         system: systemPrompt,
         messages: conversationHistory.slice(-20).filter(m => m.content && (typeof m.content !== "string" || m.content.trim()))
-      })
-    });
+      });
 
     if (!claudeRes.ok) {
       const et = await claudeRes.text().catch(()=>"");
@@ -2481,21 +2554,12 @@ async function feedBot(emoji, foodName, extraText) {
 
   try {
     const systemPrompt = await buildSystemWithRecall(feedMsg);
-    const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": claudeApiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: safeStringify({
+    const claudeRes = await fetchClaudeMessages({
         model: chatModel, max_tokens: 650,
         ...(webSearchEnabled ? {tools:[{type:"web_search_20250305",name:"web_search"}]} : {}),
         system: systemPrompt,
         messages: conversationHistory.slice(-20).filter(m => m.content && (typeof m.content !== "string" || m.content.trim()))
-      })
-    });
+      });
 
     if (!claudeRes.ok) {
       const et = await claudeRes.text().catch(()=>"");
@@ -2648,20 +2712,11 @@ Respond in this EXACT JSON format (no other text):
 Keep puzzle under 100 characters, answer under 200 characters. Be creative!`;
     }
 
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": claudeApiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: safeStringify({
+    const res = await fetchClaudeMessages({
         model: "claude-sonnet-4-6", max_tokens: 400,
         ...(mode === "search" ? {tools:[{type:"web_search_20250305",name:"web_search"}]} : {}),
         messages: [{ role: "user", content: puzzlePrompt }]
-      })
-    });
+      });
 
     if (!res.ok) throw new Error("API error: " + res.status);
     const data = await res.json();
@@ -2750,20 +2805,11 @@ async function doTruthDare(choice) {
     imprintLogTurn("user", `[真心话大冒险] 她选了${choiceLabel}`);
     const systemPrompt = await buildSystemWithRecall(choiceLabel);
 
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": claudeApiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: safeStringify({
+    const res = await fetchClaudeMessages({
         model: chatModel, max_tokens: 500,
         system: systemPrompt,
         messages: [...conversationHistory.slice(-20).filter(m => m.content && (typeof m.content !== "string" || m.content.trim())), { role: "user", content: prompt }]
-      })
-    });
+      });
 
     if (!res.ok) throw new Error("API error: " + res.status);
     const data = await res.json();
@@ -2923,6 +2969,8 @@ const AudioDB = {
 function saveKeys() {
   if (document.getElementById("rememberKeys").checked) {
     localStorage.setItem("vbc_claude_key", claudeApiKey);
+    localStorage.setItem("vbc_claude_base_url", claudeBaseUrl);
+    localStorage.setItem("vbc_claude_auth_mode", claudeAuthMode);
     localStorage.setItem("vbc_eleven_key", elevenApiKey);
     localStorage.setItem("vbc_openai_key", openaiApiKey);
     localStorage.setItem("vbc_google_key", googleApiKey);
@@ -2930,13 +2978,19 @@ function saveKeys() {
 }
 function loadKeys() {
   const ck = localStorage.getItem("vbc_claude_key");
+  const cb = localStorage.getItem("vbc_claude_base_url");
+  const cam = localStorage.getItem("vbc_claude_auth_mode");
   const ek = localStorage.getItem("vbc_eleven_key");
   const ok = localStorage.getItem("vbc_openai_key");
   const gk = localStorage.getItem("vbc_google_key");
   if (ck) document.getElementById("claudeKey").value = ck;
+  if (cb) document.getElementById("claudeBaseUrl").value = cb;
+  if (cam) document.getElementById("claudeAuthMode").value = cam;
   if (ek) document.getElementById("elevenKey").value = ek;
   if (ok) document.getElementById("openaiKey").value = ok;
   if (gk) document.getElementById("googleKey").value = gk;
+  claudeBaseUrl = (cb || "").trim();
+  claudeAuthMode = cam || "auto";
   checkKeys();
 }
 let isBusy = false; // Global lock to prevent concurrent responses
@@ -3182,6 +3236,8 @@ function onChatScrollTop() {
 
 // === Setup ===
 const claudeInput = document.getElementById("claudeKey");
+const claudeBaseUrlInput = document.getElementById("claudeBaseUrl");
+const claudeAuthModeInput = document.getElementById("claudeAuthMode");
 const elevenInput = document.getElementById("elevenKey");
 const openaiInput = document.getElementById("openaiKey");
 const googleInput = document.getElementById("googleKey");
@@ -3204,15 +3260,35 @@ function checkKeys() {
   ["input", "change", "keyup"].forEach(evt => el.addEventListener(evt, checkKeys));
   el.addEventListener("paste", () => setTimeout(checkKeys, 80));
 });
+["input", "change", "keyup", "paste"].forEach(evt => {
+  claudeBaseUrlInput.addEventListener(evt, () => {
+    setTimeout(() => {
+      claudeBaseUrl = claudeBaseUrlInput.value.trim();
+    }, evt === "paste" ? 80 : 0);
+  });
+});
+claudeAuthModeInput.addEventListener("change", () => {
+  claudeAuthMode = claudeAuthModeInput.value || "auto";
+});
 // Initial visual state
 checkKeys();
 
-// Reliable cross-browser tap: pointerdown fires before scroll detection on all platforms
-startButton.addEventListener('pointerdown', function(e) {
-  e.preventDefault();
-  startButton.style.background = '#e55'; // visible proof the tap reached the button
-  startChat();
-});
+function syncSetupState() {
+  document.body.classList.toggle("setup-active", !document.getElementById("setup").classList.contains("hidden"));
+}
+
+function handleStartButtonPress(e) {
+  if (e) e.preventDefault();
+  if (startButton.dataset.pending === "1") return;
+  startButton.dataset.pending = "1";
+  startChat().finally(() => {
+    startButton.dataset.pending = "0";
+  });
+}
+
+// Reliable mobile tap path without depending on delayed synthetic click timing
+startButton.addEventListener("pointerdown", handleStartButtonPress);
+syncSetupState();
 openaiInput.addEventListener("keydown", e => {
   if (e.key === "Enter") startChat();
 });
@@ -3232,6 +3308,8 @@ async function startChat() {
   _dbg('startChat fired');
   // Prefer live value; fall back to cached (iOS password fields can wipe .value on focus-out)
   claudeApiKey = claudeInput.value.trim() || _cachedClaude;
+  claudeBaseUrl = claudeBaseUrlInput.value.trim();
+  claudeAuthMode = claudeAuthModeInput.value || "auto";
   elevenApiKey = elevenInput.value.trim() || _cachedEleven;
   openaiApiKey = openaiInput.value.trim();
   googleApiKey = googleInput.value.trim();
@@ -3251,6 +3329,7 @@ async function startChat() {
   saveKeys();
   saveSettingsToMemory(); // Sync keys + settings to memory library
   document.getElementById("setup").classList.add("hidden");
+  syncSetupState();
   document.getElementById("chatInput").disabled = false;
   document.getElementById("sendBtn").disabled = false;
   document.getElementById("modeBtn").disabled = false;
@@ -3338,6 +3417,8 @@ function clearChat() {
 
 function logout() {
   localStorage.removeItem("vbc_claude_key");
+  localStorage.removeItem("vbc_claude_base_url");
+  localStorage.removeItem("vbc_claude_auth_mode");
   localStorage.removeItem("vbc_eleven_key");
   localStorage.removeItem("vbc_openai_key");
   localStorage.removeItem("vbc_google_key");
@@ -3439,23 +3520,14 @@ const ImprintMemory = {
     }).join("\n");
 
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": claudeApiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true"
-        },
-        body: safeStringify({
+      const res = await fetchClaudeMessages({
           model: "claude-sonnet-4-6", max_tokens: 300,
           system: `你是记忆摘要助手。把对话片段压缩成一段简洁摘要（中文，50-100字）+关键词列表。
 回复严格JSON格式，不要其他内容：
 {"summary":"摘要内容","keywords":["关键词1","关键词2"],"category":"facts|events|insights","importance":0.5}
 importance 范围 0-1，越重要越高。涉及个人偏好/生日/重要事件给0.8+，普通闲聊给0.3-0.5。`,
           messages: [{ role: "user", content: transcript }]
-        })
-      });
+        });
 
       if (!res.ok) { this.turnBuffer.unshift(...batch); return; }
       const data = await res.json();
@@ -4585,21 +4657,12 @@ async function sendMessage() {
       conversationHistory.push({ role: "user", content: displayText || `[发了文件: ${fileData.name}]` });
       imprintLogTurn("user", `[发了文件: ${fileData.name}] ${text || ""}`);
 
-      const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": claudeApiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true"
-        },
-        body: safeStringify({
+      const claudeRes = await fetchClaudeMessages({
           model: chatModel, max_tokens: 650,
           ...(webSearchEnabled ? {tools:[{type:"web_search_20250305",name:"web_search"}]} : {}),
           system: systemPrompt,
           messages: [...conversationHistory.slice(-20, -1).filter(m => m.content && (typeof m.content !== "string" || m.content.trim())), { role: "user", content: apiContent }]
-        })
-      });
+        });
 
       if (!claudeRes.ok) {
         const et = await claudeRes.text().catch(()=>"");
@@ -4639,21 +4702,12 @@ async function sendMessage() {
       imprintLogTurn("user", text || "[发了一张图片]");
 
       // Send with image
-      const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": claudeApiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true"
-        },
-        body: safeStringify({
+      const claudeRes = await fetchClaudeMessages({
           model: chatModel, max_tokens: 650,
           ...(webSearchEnabled ? {tools:[{type:"web_search_20250305",name:"web_search"}]} : {}),
           system: systemPrompt,
           messages: [...conversationHistory.slice(-20, -1).filter(m => m.content && (typeof m.content !== "string" || m.content.trim())), { role: "user", content }]
-        })
-      });
+        });
 
       if (!claudeRes.ok) {
         const et = await claudeRes.text().catch(()=>"");
@@ -4689,22 +4743,13 @@ async function sendMessage() {
       conversationHistory.push({ role: "user", content: apiText });
       imprintLogTurn("user", apiText);
 
-      const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": claudeApiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true"
-        },
-        body: safeStringify({
+      const claudeRes = await fetchClaudeMessages({
           model: chatModel,
           ...(webSearchEnabled ? {tools:[{type:"web_search_20250305",name:"web_search"}]} : {}),
           max_tokens: (currentGame && currentGame.type === "story_relay") ? 1200 : 650,
           system: systemPrompt,
           messages: conversationHistory.slice(-20).filter(m => m.content && (typeof m.content !== "string" || m.content.trim()))
-        })
-      });
+        });
 
       if (!claudeRes.ok) {
         const errText = await claudeRes.text().catch(() => "");
@@ -5072,22 +5117,13 @@ async function sendAllStaged() {
     conversationHistory.push({ role: "user", content: combinedText });
     imprintLogTurn("user", combinedText);
     
-    const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": claudeApiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: safeStringify({
+    const claudeRes = await fetchClaudeMessages({
         model: chatModel,
         ...(webSearchEnabled ? {tools:[{type:"web_search_20250305",name:"web_search"}]} : {}),
         max_tokens: 650,
         system: systemPrompt,
         messages: conversationHistory.slice(-20).filter(m => m.content && (typeof m.content !== "string" || m.content.trim()))
-      })
-    });
+      });
     
     if (!claudeRes.ok) {
       const errText = await claudeRes.text().catch(() => "");
@@ -5424,20 +5460,11 @@ async function stopVoiceRecord() {
       const systemPrompt = await buildSystemWithRecall(text);
       conversationHistory.push({ role: "user", content: text });
       imprintLogTurn("user", text);
-      const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": claudeApiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true"
-        },
-        body: safeStringify({
+      const claudeRes = await fetchClaudeMessages({
           model: chatModel, max_tokens: 650,
           ...(webSearchEnabled ? {tools:[{type:"web_search_20250305",name:"web_search"}]} : {}),
           system: systemPrompt, messages: conversationHistory.slice(-20).filter(m => m.content && (typeof m.content !== "string" || m.content.trim()))
-        })
-      });
+        });
 
       if (!claudeRes.ok) {
         const et = await claudeRes.text().catch(()=>"");
@@ -5719,20 +5746,11 @@ async function handleCallMessage(text) {
     const systemPrompt = await buildSystemWithRecall(text);
     conversationHistory.push({ role: "user", content: text });
     imprintLogTurn("user", text);
-    const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": claudeApiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: safeStringify({
+    const claudeRes = await fetchClaudeMessages({
         model: chatModel, max_tokens: 650,
           ...(webSearchEnabled ? {tools:[{type:"web_search_20250305",name:"web_search"}]} : {}),
         system: systemPrompt, messages: conversationHistory.slice(-20).filter(m => m.content && (typeof m.content !== "string" || m.content.trim()))
-      })
-    });
+      });
 
     if (!claudeRes.ok) {
       const et = await claudeRes.text().catch(()=>"");
@@ -5958,20 +5976,11 @@ async function sendProactiveMessage() {
       { role: "user", content: prompt }
     ];
 
-    const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": claudeApiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: safeStringify({
+    const claudeRes = await fetchClaudeMessages({
         model: chatModel, max_tokens: 500,
           ...(webSearchEnabled ? {tools:[{type:"web_search_20250305",name:"web_search"}]} : {}),
         system: SYSTEM_PROMPT + recallBlock, messages: reqMsgs
-      })
-    });
+      });
 
     if (!claudeRes.ok) { const _e = await claudeRes.text().catch(()=>""); throw new Error("API error (" + claudeRes.status + "): " + _e.slice(0, 200)); }
     const claudeData = await claudeRes.json();
@@ -6224,20 +6233,11 @@ async function peekAndReact(userAsked) {
       }
     ];
 
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": claudeApiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: safeStringify({
+    const res = await fetchClaudeMessages({
         model: chatModel, max_tokens: 500,
           ...(webSearchEnabled ? {tools:[{type:"web_search_20250305",name:"web_search"}]} : {}),
         system: await buildSystemWithRecall("看屏幕"), messages: apiMsgs
-      })
-    });
+      });
 
     if (!res.ok) { const _e = await res.text().catch(()=>""); throw new Error("API error (" + res.status + "): " + _e.slice(0, 200)); }
     const data = await res.json();
@@ -6323,23 +6323,14 @@ async function retroImportHistory() {
     }).join("\n");
 
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": claudeApiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true"
-        },
-        body: safeStringify({
+      const res = await fetchClaudeMessages({
           model: "claude-sonnet-4-6", max_tokens: 300,
           system: `你是记忆摘要助手。把对话片段压缩成一段简洁摘要（中文，50-100字）+关键词列表。
 回复严格JSON格式，不要其他内容：
 {"summary":"摘要内容","keywords":["关键词1","关键词2"],"category":"facts|events|insights","importance":0.5}
 importance 范围 0-1，越重要越高。涉及个人偏好/生日/重要事件给0.8+，普通闲聊给0.3-0.5。`,
           messages: [{ role: "user", content: transcript }]
-        })
-      });
+        });
 
       if (!res.ok) { errors++; continue; }
       const data = await res.json();
@@ -6845,6 +6836,8 @@ function saveSettingsToMemory() {
         chatModel: chatModel,
         keys: {
           claude: claudeApiKey || "",
+          claudeBaseUrl: claudeBaseUrl || "",
+          claudeAuthMode: claudeAuthMode || "auto",
           eleven: elevenApiKey || "",
           openai: openaiApiKey || "",
           google: googleApiKey || ""
@@ -6898,6 +6891,8 @@ async function loadSettingsFromMemory() {
     if (settings.keys) {
       const k = settings.keys;
       if (k.claude) { claudeApiKey = k.claude; document.getElementById("claudeKey").value = k.claude; }
+      if (k.claudeBaseUrl) { claudeBaseUrl = k.claudeBaseUrl; document.getElementById("claudeBaseUrl").value = k.claudeBaseUrl; }
+      if (k.claudeAuthMode) { claudeAuthMode = k.claudeAuthMode; document.getElementById("claudeAuthMode").value = k.claudeAuthMode; }
       if (k.eleven) { elevenApiKey = k.eleven; document.getElementById("elevenKey").value = k.eleven; }
       if (k.openai) { openaiApiKey = k.openai; document.getElementById("openaiKey").value = k.openai; }
       if (k.google) { googleApiKey = k.google; document.getElementById("googleKey").value = k.google; }
@@ -7599,11 +7594,7 @@ async function sendRoleplayMessage(userText) {
 
   try {
     const sysPrompt = buildRpSystemPrompt();
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": claudeApiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-      body: safeStringify({ model: chatModel, max_tokens: 1200, system: sysPrompt, messages: rpConvHistory.slice(-30) })
-    });
+    const res = await fetchClaudeMessages({ model: chatModel, max_tokens: 1200, system: sysPrompt, messages: rpConvHistory.slice(-30) });
     if (!res.ok) throw new Error("API错误 " + res.status);
 
     const data = await res.json();
@@ -7720,11 +7711,7 @@ ${transcript}
 2. 控制在3000字以内但要足够详细，以便下次能无缝继续剧情
 3. 直接输出总结内容，不加标题`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": claudeApiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-    body: safeStringify({ model: "claude-sonnet-4-6", max_tokens: 4000, messages: [{ role: "user", content: prompt }] })
-  });
+  const res = await fetchClaudeMessages({ model: "claude-sonnet-4-6", max_tokens: 4000, messages: [{ role: "user", content: prompt }] });
   if (!res.ok) throw new Error("API错误 " + res.status);
   const data = await res.json();
   return data.content.filter(c => c.type === "text").map(c => c.text).join("").trim();
@@ -7923,21 +7910,12 @@ async function sendDressupOutfit() {
     conversationHistory.push({ role: "user", content: `[换装:递了一件衣服]${extraText ? " " + extraText : ""}` });
     imprintLogTurn("user", `[换装:递了一件衣服的图片]${extraText ? " " + extraText : ""}`);
 
-    const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": claudeApiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: safeStringify({
+    const claudeRes = await fetchClaudeMessages({
         model: chatModel, max_tokens: 650,
         ...(webSearchEnabled ? {tools:[{type:"web_search_20250305",name:"web_search"}]} : {}),
         system: systemPrompt,
         messages: [...conversationHistory.slice(-20, -1).filter(m => m.content && (typeof m.content !== "string" || m.content.trim())), { role: "user", content }]
-      })
-    });
+      });
 
     if (!claudeRes.ok) {
       const et = await claudeRes.text().catch(()=>"");
@@ -8015,21 +7993,12 @@ async function sendDefaultOutfit() {
   document.getElementById("statusBar").textContent = "正在换衣服...";
 
   try {
-    const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": claudeApiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: safeStringify({
+    const claudeRes = await fetchClaudeMessages({
         model: chatModel, max_tokens: 500,
         ...(webSearchEnabled ? {tools:[{type:"web_search_20250305",name:"web_search"}]} : {}),
         system: systemPrompt,
         messages: conversationHistory.slice(-20).filter(m => m.content && (typeof m.content !== "string" || m.content.trim()))
-      })
-    });
+      });
 
     if (!claudeRes.ok) {
       const et = await claudeRes.text().catch(()=>"");
@@ -8482,21 +8451,12 @@ ${prevDiaries}
 
 直接写日记正文：`;
 
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": claudeApiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: safeStringify({
+    const res = await fetchClaudeMessages({
         model: "claude-sonnet-4-6",
         max_tokens: 2000,
         system: SYSTEM_PROMPT.replace(/CRITICAL: Respond ONLY in a valid JSON ARRAY[\s\S]*$/, "").trim(),
         messages: [{ role: "user", content: diaryPrompt }]
-      })
-    });
+      });
 
     if (!res.ok) {
       const et = await res.text().catch(() => "");
