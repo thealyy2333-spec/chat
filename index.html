@@ -1952,6 +1952,7 @@
     </div>
 
     <button id="startBtn" onclick="startChat()">开始聊天</button>
+    <div id="_dbgDiv" style="font-size:11px;color:#f66;margin-top:6px;min-height:14px;"></div>
 
     <div class="setup-hint">
       Anthropic → <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a><br>
@@ -3206,11 +3207,12 @@ function checkKeys() {
 // Initial visual state
 checkKeys();
 
-// iOS-safe button listener: touchend fires before click and is more reliable in scroll containers
-startButton.addEventListener('touchend', function(e) {
-  e.preventDefault(); // prevent ghost click
+// Reliable cross-browser tap: pointerdown fires before scroll detection on all platforms
+startButton.addEventListener('pointerdown', function(e) {
+  e.preventDefault();
+  startButton.style.background = '#e55'; // visible proof the tap reached the button
   startChat();
-}, { passive: false });
+});
 openaiInput.addEventListener("keydown", e => {
   if (e.key === "Enter") startChat();
 });
@@ -3221,8 +3223,13 @@ googleInput.addEventListener("keydown", e => {
   if (e.key === "Enter" && !startButton.disabled) startChat();
 });
 
+function _dbg(msg) {
+  const d = document.getElementById('_dbgDiv');
+  if (d) d.textContent = msg;
+}
+
 async function startChat() {
-  alert('DEBUG: startChat 已触发');
+  _dbg('startChat fired');
   // Prefer live value; fall back to cached (iOS password fields can wipe .value on focus-out)
   claudeApiKey = claudeInput.value.trim() || _cachedClaude;
   elevenApiKey = elevenInput.value.trim() || _cachedEleven;
@@ -3232,10 +3239,12 @@ async function startChat() {
   startButton.textContent = '连接中...';
   startButton.style.opacity = '0.7';
 
+  _dbg('keys: claude=' + (claudeApiKey?'OK':'EMPTY') + ' eleven=' + (elevenApiKey?'OK':'EMPTY'));
+
   if (!claudeApiKey || !elevenApiKey) {
     startButton.textContent = '开始聊天';
     startButton.style.opacity = _cachedClaude && _cachedEleven ? '1' : '0.4';
-    alert('⚠️ 请先填写 Anthropic 和 ElevenLabs 的 API Key');
+    _dbg('ERROR: API Key empty');
     return;
   }
 
