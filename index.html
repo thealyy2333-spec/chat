@@ -3222,6 +3222,7 @@ googleInput.addEventListener("keydown", e => {
 });
 
 async function startChat() {
+  alert('DEBUG: startChat 已触发');
   // Prefer live value; fall back to cached (iOS password fields can wipe .value on focus-out)
   claudeApiKey = claudeInput.value.trim() || _cachedClaude;
   elevenApiKey = elevenInput.value.trim() || _cachedEleven;
