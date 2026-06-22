@@ -1516,10 +1516,15 @@
     .setup-card {
       padding: 24px 18px;
       max-height: 90dvh;
+      overflow-y: auto;
     }
 
-    /* Prevent 300ms tap delay and scroll-swallow on iOS */
-    #startBtn { touch-action: manipulation; }
+    /* Prevent 300ms tap delay on iOS; pointer-events ensures no parent blocks it */
+    #startBtn {
+      touch-action: manipulation;
+      pointer-events: all !important;
+      -webkit-tap-highlight-color: rgba(0,0,0,0.1);
+    }
 
     /* ── Sticker picker ──────────────────────────────── */
     /* Already spans full width via left:0/right:0; just tighten bottom gap */
@@ -3181,10 +3186,15 @@ const openaiInput = document.getElementById("openaiKey");
 const googleInput = document.getElementById("googleKey");
 const startButton = document.getElementById("startBtn");
 
+// Cache last-seen key values so iOS password-field security wipe can't lose them
+let _cachedClaude = '', _cachedEleven = '';
+
 function checkKeys() {
-  const ready = !!(claudeInput.value.trim() && elevenInput.value.trim());
-  // Never set disabled=true — mobile browsers block onclick on disabled buttons.
-  // Use only visual feedback so tapping always works regardless of event timing.
+  const cv = claudeInput.value.trim();
+  const ev = elevenInput.value.trim();
+  if (cv) _cachedClaude = cv;
+  if (ev) _cachedEleven = ev;
+  const ready = !!(_cachedClaude && _cachedEleven);
   startButton.style.opacity = ready ? "1" : "0.4";
   startButton.style.cursor  = ready ? "pointer" : "default";
 }
@@ -3195,6 +3205,12 @@ function checkKeys() {
 });
 // Initial visual state
 checkKeys();
+
+// iOS-safe button listener: touchend fires before click and is more reliable in scroll containers
+startButton.addEventListener('touchend', function(e) {
+  e.preventDefault(); // prevent ghost click
+  startChat();
+}, { passive: false });
 openaiInput.addEventListener("keydown", e => {
   if (e.key === "Enter") startChat();
 });
@@ -3206,11 +3222,21 @@ googleInput.addEventListener("keydown", e => {
 });
 
 async function startChat() {
-  claudeApiKey = claudeInput.value.trim();
-  elevenApiKey = elevenInput.value.trim();
+  // Prefer live value; fall back to cached (iOS password fields can wipe .value on focus-out)
+  claudeApiKey = claudeInput.value.trim() || _cachedClaude;
+  elevenApiKey = elevenInput.value.trim() || _cachedEleven;
   openaiApiKey = openaiInput.value.trim();
   googleApiKey = googleInput.value.trim();
-  if (!claudeApiKey || !elevenApiKey) return;
+
+  startButton.textContent = '连接中...';
+  startButton.style.opacity = '0.7';
+
+  if (!claudeApiKey || !elevenApiKey) {
+    startButton.textContent = '开始聊天';
+    startButton.style.opacity = _cachedClaude && _cachedEleven ? '1' : '0.4';
+    alert('⚠️ 请先填写 Anthropic 和 ElevenLabs 的 API Key');
+    return;
+  }
 
   saveKeys();
   saveSettingsToMemory(); // Sync keys + settings to memory library
